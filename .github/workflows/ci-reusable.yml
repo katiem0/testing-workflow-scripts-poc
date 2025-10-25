@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      run-tests:
+        required: false
+        type: boolean
+        default: true
+
+env:
+  FORCE_COLOR: "1"
+  NODE_VERSION: "18"
+  BUILD_DIR: dist
+  CACHE_VERSION: v1
+  TIMESTAMP: ${{ github.run_id }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Print context
+        shell: bash
+        run: |
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+          echo "SHA: $GITHUB_SHA"
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Run ID: $GITHUB_RUN_ID"
+
+      - name: Show environment
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "PATH=$PATH"
+          echo "Home=$HOME"
+          echo "Shell=$SHELL"
+          uname -a
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Validate package manifest
+        shell: bash
+        run: |
+          set -e
+          test -f package.json || { echo "package.json missing"; exit 1; }
+          jq '.name, .version' package.json
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -eux
+          npm ci
+          npm prune
+
+      - name: Cache build artifacts
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BUILD_DIR }}
+          key: build-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            build-${{ env.CACHE_VERSION }}-${{ runner.os }}-
+
+      - name: Pre-build cleanup
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -rf "${BUILD_DIR}" || true
+          mkdir -p "${BUILD_DIR}"
+
+      - name: Lint
+        shell: bash
+        run: |
+          set -eux
+          npx eslint . || (echo "Lint failed" && exit 1)
+
+      - name: Type check
+        shell: bash
+        run: |
+          set -eux
+          if [ -f tsconfig.json ]; then
+            npx tsc -p tsconfig.json --noEmit
+          else
+            echo "No tsconfig.json; skipping type check"
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -f package.json ]; then
+            npm run build || { echo "Build failed"; exit 1; }
+          fi
+          ls -R "${BUILD_DIR}" || echo "Build dir missing"
+
+      - name: List large files
+        shell: bash
+        run: |
+          set -e
+          find . -type f -size +5M -print || true
+
+      - name: Security audit
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -eux
+          npm audit --audit-level=moderate || echo "Audit found issues"
+
+      - name: Run unit tests
+        if: ${{ inputs.run-tests }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          npm test -- --ci
+
+      - name: Coverage summary
+        if: always()
+        shell: bash
+        run: |
+          set -e
+            if [ -d coverage ]; then
+              grep -R "Statements" coverage/**/index.html || true
+              echo "Coverage artifacts collected"
+            else
+              echo "No coverage directory"
+            fi
+
+      - name: Archive build
+        if: success()
+        shell: bash
+        run: |
+          set -eux
+          tar czf build-${TIMESTAMP}.tar.gz "${BUILD_DIR}"
+          echo "Archive created: build-${TIMESTAMP}.tar.gz"
+          ls -lh build-${TIMESTAMP}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.run_id }}
+          path: |
+            build-${{ github.run_id }}.tar.gz
+            ${BUILD_DIR}
+
+      - name: Git metadata
+        shell: bash
+        run: |
+          set -e
+          git --no-pager log -1 --pretty=oneline
+          git status --short
+
+      - name: Validate formatting
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -e
+          if npx prettier -v >/dev/null 2>&1; then
+            npx prettier -c "**/*.{js,ts,jsx,tsx,json,md,yml}" || echo "Formatting differences found"
+          else
+            echo "Prettier not installed"
+          fi
+
+      - name: Diff generated vs committed
+        shell: bash
+        run: |
+          set -eux
+          if [ -f package.json ]; then
+            npm run build || true
+            git diff --name-only "${BUILD_DIR}" || true
+          fi
+
+      - name: Final summary
+        if: always()
+        shell: bash
+        run: |
+          echo "Job conclusion: ${{ job.status }}"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run number: ${{ github.run_number }}"
+          echo "Done."

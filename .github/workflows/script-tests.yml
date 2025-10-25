@@ -1,0 +1,122 @@
+name: Test Scripts on PR
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/**'
+      - 'tests/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/**'
+      - 'tests/**'
+  workflow_dispatch:
+
+jobs:
+  security-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download shunit2
+        run: |
+          if [[ ! -f tests/shunit2 ]]; then
+            curl -sSL https://raw.githubusercontent.com/kward/shunit2/master/shunit2 -o tests/shunit2
+            chmod +x tests/shunit2
+          fi
+
+      - name: Make test scripts executable
+        run: chmod +x tests/*.sh
+
+      - name: Run all security tests
+        run: ./tests/run-all-tests.sh
+
+      - name: Verify no dangerous patterns
+        run: |
+          echo "Checking for dangerous patterns in scripts..."
+          
+          # Check for rm -rf /
+          if grep -rE "rm -rf /[^a-zA-Z]|rm -rf /\$" .github/scripts/; then
+            echo "ERROR: Found dangerous 'rm -rf /' command"
+            exit 1
+          fi
+          
+          # Check for eval
+          if grep -r "eval" .github/scripts/ | grep -v "^#"; then
+            echo "ERROR: Found 'eval' usage (security risk)"
+            exit 1
+          fi
+          
+          # Check for download-and-execute
+          if grep -rE "curl.*\|.*bash|wget.*\|.*sh" .github/scripts/; then
+            echo "ERROR: Found download-and-execute pattern"
+            exit 1
+          fi
+          
+          # Check for fork bombs
+          if grep -rE ":.*\(\).*\{.*:.*\|.*:.*&.*\}.*;" .github/scripts/; then
+            echo "ERROR: Found potential fork bomb"
+            exit 1
+          fi
+          
+          echo "✓ No dangerous patterns found"
+
+      - name: Verify scripts are executable
+        run: |
+          echo "Checking that all scripts are executable..."
+          failed=0
+          for script in .github/scripts/*.sh; do
+            if [[ ! -x "$script" ]]; then
+              echo "ERROR: $script is not executable"
+              failed=1
+            fi
+          done
+          if [[ $failed -eq 1 ]]; then
+            exit 1
+          fi
+          echo "✓ All scripts are executable"
+
+      - name: Verify bash syntax
+        run: |
+          echo "Checking bash syntax for all scripts..."
+          failed=0
+          for script in .github/scripts/*.sh; do
+            if ! bash -n "$script" 2>/dev/null; then
+              echo "ERROR: $script has syntax errors"
+              failed=1
+            fi
+          done
+          if [[ $failed -eq 1 ]]; then
+            exit 1
+          fi
+          echo "✓ All scripts have valid syntax"
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          echo "## Script Security Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ ${{ job.status }} == "success" ]]; then
+            echo "All tests passed!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Some tests failed. Please review the logs." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Scripts Tested:" >> $GITHUB_STEP_SUMMARY
+          for script in .github/scripts/*.sh; do
+            echo "- \`$(basename $script)\`" >> $GITHUB_STEP_SUMMARY
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Suites Run:" >> $GITHUB_STEP_SUMMARY
+          for test in tests/test-*.sh; do
+            echo "- \`$(basename $test)\`" >> $GITHUB_STEP_SUMMARY
+          done

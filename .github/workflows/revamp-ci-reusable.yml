@@ -1,0 +1,106 @@
+name: CI (Revamped)
+
+on:
+  workflow_call:
+    inputs:
+      run-tests:
+        required: false
+        type: boolean
+        default: true
+
+env:
+  FORCE_COLOR: "1"
+  NODE_VERSION: "18"
+  BUILD_DIR: dist
+  CACHE_VERSION: v1
+  TIMESTAMP: ${{ github.run_id }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Print context
+        run: ./.github/scripts/print-context.sh
+
+      - name: Show environment
+        run: ./.github/scripts/show-environment.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Validate package manifest
+        run: ./.github/scripts/validate-manifest.sh
+
+      - name: Install dependencies
+        run: ./.github/scripts/install-deps.sh
+
+      - name: Cache build artifacts
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BUILD_DIR }}
+          key: build-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            build-${{ env.CACHE_VERSION }}-${{ runner.os }}-
+
+      - name: Pre-build cleanup
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: ./.github/scripts/pre-build-cleanup.sh
+
+      - name: Lint
+        run: ./.github/scripts/lint.sh
+
+      - name: Type check
+        run: ./.github/scripts/type-check.sh
+
+      - name: Build
+        run: ./.github/scripts/build.sh
+
+      - name: List large files
+        run: ./.github/scripts/list-large-files.sh
+
+      - name: Security audit
+        continue-on-error: true
+        run: ./.github/scripts/security-audit.sh
+
+      - name: Run unit tests
+        if: ${{ inputs.run-tests }}
+        run: ./.github/scripts/run-tests.sh
+
+      - name: Coverage summary
+        if: always()
+        run: ./.github/scripts/coverage-summary.sh
+
+      - name: Archive build
+        if: success()
+        run: ./.github/scripts/archive-build.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.run_id }}
+          path: |
+            build-${{ github.run_id }}.tar.gz
+            ${{ env.BUILD_DIR }}
+
+      - name: Git metadata
+        run: ./.github/scripts/git-metadata.sh
+
+      - name: Validate formatting
+        continue-on-error: true
+        run: ./.github/scripts/validate-formatting.sh
+
+      - name: Diff generated vs committed
+        run: ./.github/scripts/diff-generated.sh
+
+      - name: Final summary
+        if: always()
+        run: ./.github/scripts/final-summary.sh
