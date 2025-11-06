@@ -1,6 +1,7 @@
 # Workflow Testing POC
 
-A proof-of-concept repository demonstrating how to refactor GitHub Actions workflows from inline bash scripts to modular, testable script files with comprehensive security testing.
+A proof-of-concept repository demonstrating how to refactor GitHub Actions workflows from inline bash
+scripts to modular, testable script files with comprehensive security testing.
 
 ## Overview
 
